@@ -6,7 +6,12 @@
   var W = window, D = document;
   if (W.__bgfx) { W.__bgfx.open(); return; }
 
-  var CDN = W.__BGFX_CDN || 'https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1.1675465747/';
+  var EXT = !!W.__BGFX_EXT;
+  var CDN0 = 'https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1.1675465747/', CDN = CDN0;
+  function cdn() {
+    var b = null; try { b = D.documentElement.getAttribute('data-bgfx-base'); } catch (e) {}
+    return W.__BGFX_CDN || b || CDN0;
+  }
   var KEY = 'bgfx-settings', IKEY = 'bgfx-image';
   function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
   function lsSet(k, v) { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } }
@@ -74,6 +79,7 @@
   function loadSeg() {
     if (segState !== 'idle') return;
     segState = 'loading'; ui();
+    CDN = cdn();
     try {
       var s = D.createElement('script');
       s.src = CDN + 'selfie_segmentation.js';
@@ -126,6 +132,7 @@
     dress(p);
     raw.addEventListener('ended', function () { kill(p); });
     loop(p);
+    if (!panel) { try { buildUI(); } catch (e) {} }
     if (S.mode !== 'off' && S.mode !== 'spot') loadSeg();
     ui();
     return out;
@@ -299,7 +306,7 @@
   var host, root, panel, btn, dot, statusEl, hideBtn, rows = {}, chips = {};
   function el(tag, attrs, kids) {
     var e = D.createElement(tag);
-    for (var a in (attrs || {})) { if (a === 'text') e.textContent = attrs[a]; else if (a.slice(0, 2) === 'on') e.addEventListener(a.slice(2), attrs[a]); else e.setAttribute(a, attrs[a]); }
+    for (var a in (attrs || {})) { if (a === 'text') e.textContent = attrs[a]; else if (a === 'style') e.style.cssText = attrs[a]; else if (a.slice(0, 2) === 'on') e.addEventListener(a.slice(2), attrs[a]); else e.setAttribute(a, attrs[a]); }
     (kids || []).forEach(function (c) { if (c) e.appendChild(c); });
     return e;
   }
@@ -321,7 +328,9 @@
   function buildUI() {
     host = el('div', { id: 'bgfx-host' });
     root = host.attachShadow ? host.attachShadow({ mode: 'open' }) : host;
-    root.appendChild(el('style', { text: CSS }));
+    // Constructable stylesheet: not blocked by strict page security policies (Zoom); <style> as fallback.
+    try { var sh = new CSSStyleSheet(); sh.replaceSync(CSS); root.adoptedStyleSheets = [sh]; }
+    catch (e) { root.appendChild(el('style', { text: CSS })); }
     dot = el('span', { 'class': 'd' });
     btn = el('button', { 'class': 'b', 'aria-label': 'Background effects', text: '✨' }, [dot]);
     var pos = (function () { try { return JSON.parse(lsGet('bgfx-pos')) || null; } catch (e) { return null; } })() || { r: 10, t: 84 };
@@ -401,8 +410,10 @@
 
   /* ---------- start ---------- */
   hook(W);
-  try { buildUI(); } catch (e) { console.warn('[bgfx] UI failed', e); }
-  if (S.mode !== 'off' && S.mode !== 'spot') loadSeg();
+  if (!EXT) {
+    try { buildUI(); } catch (e) { console.warn('[bgfx] UI failed', e); }
+    if (S.mode !== 'off' && S.mode !== 'spot') loadSeg();
+  }
   sweep();
   setInterval(function () { sweep(); vidWatchdog(); ui(); }, 1500);
   ui();
@@ -414,5 +425,5 @@
     setColor: function (c) { S.color = c; persist(); },
     state: function () { var f = []; procs.forEach(function (p) { f.push(p.fps); }); return { mode: S.mode, hidden: hidden, ai: segState, cameras: procs.size, fps: f }; }
   };
-  try { console.info('[bgfx] active. Mode:', S.mode); } catch (e) {}
+  if (!EXT) try { console.info('[bgfx] active. Mode:', S.mode); } catch (e) {}
 })();
