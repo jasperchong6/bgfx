@@ -19,6 +19,17 @@ Tap the address bar, type bgfx, and tap the bookmark suggestion (not a search re
 A ✨ button appears within a few seconds. Tap it to pick a mode. Drag it if it covers a control. If you see a "bgfx could not load" message instead, the page or your connection blocked it.
 If your camera was already on, it switches over within 2 seconds. If you still look unchanged, turn your camera off and on in ELO.
 
+On Laptopn (Chrome) One-time setup
+Show the bookmarks bar: Ctrl+Shift+B on Windows, Cmd+Shift+B on Mac.
+If your phone and laptop are signed into the same Chrome account with sync on, bgfx may already be in Bookmarks → Mobile bookmarks. Drag it onto the bar and skip step 3.
+Otherwise, right-click the bar, choose Add page…, name it bgfx, and paste the same code from the install page as the URL. Save.
+
+Each meeting
+Open in Chrome.
+Click bgfx on the bar. A ✨ button appears at the top right of the page.
+Pick Blur, Image, Colour or Spot. If your video looks unchanged after a couple of seconds, turn your camera off and on
+Click it again after any page reload. Your settings are remembered per browser.
+
 Modes and the status dot
 Blur
 AI cuts you out and blurs the rest. Slider sets strength.
