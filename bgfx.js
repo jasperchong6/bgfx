@@ -29,17 +29,42 @@
   }
   function setVid(blob) {
     try {
-      if (bgVid) { URL.revokeObjectURL(bgVid.src); bgVid.remove(); }
+      if (bgVid) { bgVid.__hold = true; URL.revokeObjectURL(bgVid.src); bgVid.remove(); }
+      vcacheOk = false;
       var v = D.createElement('video');
       v.muted = true; v.loop = true; v.playsInline = true; v.setAttribute('playsinline', ''); v.__bgfxMine = 1;
       v.style.cssText = 'position:fixed;left:2px;top:0;width:2px;height:2px;opacity:.01;pointer-events:none;z-index:-1';
+      v.addEventListener('ended', function () { v.currentTime = 0; v.play().catch(function () {}); });
+      v.addEventListener('pause', function () { if (S.mode === 'video' && !v.__hold) setTimeout(function () { v.play().catch(function () {}); }, 50); });
       v.onerror = function () { vidNote = 'That video could not be played here \u2014 try an MP4.'; bgVid = null; ui(); };
       v.src = URL.createObjectURL(blob);
       (D.body || D.documentElement).appendChild(v);
       bgVid = v; vidNote = ''; syncVid();
     } catch (e) { vidNote = 'Video failed to load.'; }
   }
-  function syncVid() { if (!bgVid) return; if (S.mode === 'video') bgVid.play().catch(function () {}); else bgVid.pause(); }
+  function syncVid() {
+    if (!bgVid) return;
+    bgVid.__hold = S.mode !== 'video';
+    if (bgVid.__hold) bgVid.pause(); else bgVid.play().catch(function () {});
+  }
+  var lastT = -1, stuck = 0;
+  function vidWatchdog() {
+    var v = bgVid; if (!v || S.mode !== 'video') return;
+    if (v.paused) { v.play().catch(function () {}); return; }
+    stuck = v.currentTime === lastT ? stuck + 1 : 0; lastT = v.currentTime;
+    if (stuck >= 2) { stuck = 0; try { v.currentTime = 0; } catch (e) {} v.play().catch(function () {}); }
+  }
+  // Last good frame, so a loop restart or a stall never flashes the plain colour.
+  var vcache = null, vcacheOk = false;
+  function vidFrame() {
+    var v = bgVid; if (!v) return null;
+    if (v.readyState >= 2 && v.videoWidth) {
+      if (!vcache) vcache = D.createElement('canvas');
+      if (vcache.width !== v.videoWidth || vcache.height !== v.videoHeight) { vcache.width = v.videoWidth; vcache.height = v.videoHeight; }
+      try { vcache.getContext('2d').drawImage(v, 0, 0); vcacheOk = true; } catch (e) {}
+    }
+    return vcacheOk ? vcache : null;
+  }
   idb(function (st) { var g = st.get('video'); g.onsuccess = function () { if (g.result) { setVid(g.result); ui(); } }; });
 
   /* ---------- AI segmentation (MediaPipe Selfie Segmentation, landscape model) ---------- */
@@ -166,9 +191,9 @@
   function compose(p, mask, img) {
     var x = p.x, w = p.c.width, h = p.c.height, m = S.mode;
     // 1) background
-    var src = m === 'image' ? bgImg : m === 'video' && bgVid && bgVid.readyState >= 2 ? bgVid : null;
+    var src = m === 'image' ? bgImg : m === 'video' ? vidFrame() : null;
     if (src) {
-      var nw = src.naturalWidth || src.videoWidth, nh = src.naturalHeight || src.videoHeight;
+      var nw = src.naturalWidth || src.width, nh = src.naturalHeight || src.height;
       var sc = Math.max(w / nw, h / nh), iw = nw * sc, ih = nh * sc;
       x.drawImage(src, (w - iw) / 2, (h - ih) / 2, iw, ih);
     } else if (m === 'color' || m === 'image' || m === 'video') {
@@ -361,7 +386,7 @@
   try { buildUI(); } catch (e) { console.warn('[bgfx] UI failed', e); }
   if (S.mode !== 'off' && S.mode !== 'spot') loadSeg();
   sweep();
-  setInterval(function () { sweep(); ui(); }, 1500);
+  setInterval(function () { sweep(); vidWatchdog(); ui(); }, 1500);
   ui();
   W.__bgfx = {
     open: function () { if (panel) { panel.style.display = 'block'; ui(); } },
