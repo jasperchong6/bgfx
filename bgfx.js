@@ -16,7 +16,7 @@
   function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
   function lsSet(k, v) { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } }
 
-  var S = { mode: 'blur', blur: 16, color: '#24384d' };
+  var S = { mode: 'blur', blur: 16, color: '#24384d', autoOut: false, leaveAt: '' };
   try { var saved = JSON.parse(lsGet(KEY) || '{}'); for (var k in saved) S[k] = saved[k]; } catch (e) {}
   var hidden = false;
   function wantVid() { return S.mode === 'video' || hidden; }
@@ -302,6 +302,91 @@
     procs.forEach(function (p) { if (p.v.paused) p.v.play().catch(function () {}); });
   }
 
+  /* ---------- auto log out when the class ends ---------- */
+  var END_WORDS = ['meeting has ended', 'meeting has been ended', 'session has ended', 'session ended', 'class has ended',
+    'class is over', 'ended by the host', 'ended by host', 'host has ended', 'you have left the meeting', 'you left the meeting',
+    'meeting is over', 'webinar has ended', 'call has ended', 'call ended'];
+  var T = W.__BGFX_T || { seen: 60000, quiet: 45000, count: 30 };
+  var sess = { seen: false, firstCam: 0, quietSince: 0, cancelled: false, counting: null, lastText: 0, done: false, leaveFired: '' };
+  function pcLive() { var live = false; pcs.forEach(function (pc) { var c = pc.connectionState || pc.iceConnectionState; if (c === 'connected' || c === 'connecting' || c === 'checking' || c === 'completed' || c === 'new') live = true; }); return live; }
+  function camLive() { var n = 0; procs.forEach(function (p) { if (!p.dead && p.raw.readyState === 'live') n++; }); return n > 0; }
+  function endTextSeen() {
+    var now = Date.now(); if (now - sess.lastText < 4000) return false; sess.lastText = now;
+    var t = ''; try { docs().forEach(function (d) { t += ' ' + ((d.body && d.body.innerText) || ''); }); } catch (e) {}
+    t = t.toLowerCase();
+    for (var i = 0; i < END_WORDS.length; i++) if (t.indexOf(END_WORDS[i]) >= 0) return END_WORDS[i];
+    return false;
+  }
+  function hhmm() { var d = new Date(); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2); }
+  function endWatch() {
+    if (sess.done || sess.counting) return;
+    var now = Date.now(), cam = camLive(), anyPc = pcs.size > 0, live = pcLive();
+    if (anyPc) sess.hadPc = true;
+    // A session "counts" once the camera has been on for a minute, or a call connection has come up with it.
+    if (cam && !sess.firstCam) sess.firstCam = now;
+    if (cam && (live && anyPc || now - sess.firstCam > T.seen)) { if (!sess.seen) { sess.seen = true; sess.cancelled = false; } }
+    // Fixed time works even when detection can't tell.
+    if (S.leaveAt && hhmm() === S.leaveAt && sess.leaveFired !== S.leaveAt + new Date().toDateString()) {
+      sess.leaveFired = S.leaveAt + new Date().toDateString(); startCountdown('It’s ' + S.leaveAt + ', your leave time.'); return;
+    }
+    if (!S.autoOut || !sess.seen || sess.cancelled) return;
+    var txt = endTextSeen();
+    if (txt) { startCountdown('The page says “' + txt + '”.'); return; }
+    // Camera released by the app and the call connection gone for 45 s => class is over.
+    // Only on sites that use standard call connections (ELO, Meet, Teams); Zoom web relies on its end-of-meeting message.
+    if (sess.hadPc && !cam && !live) { if (!sess.quietSince) sess.quietSince = now; else if (now - sess.quietSince > T.quiet) startCountdown('The call and your camera have been off for 45 seconds.'); }
+    else sess.quietSince = 0;
+  }
+  var toast;
+  function startCountdown(why) {
+    var left = T.count;
+    if (!host) { try { buildUI(); } catch (e) {} }
+    toast = toast || el('div', { 'class': 't' });
+    while (toast.firstChild) toast.removeChild(toast.firstChild);
+    var msg = el('div', { 'class': 'tm' }), row = el('div', { 'class': 'tr' }, [
+      el('button', { 'class': 'tc', text: 'Cancel — I’m still in class', onclick: function () { stopCountdown(); sess.cancelled = true; sess.quietSince = 0; } }),
+      el('button', { 'class': 'tg', text: 'Log out now', onclick: function () { stopCountdown(); logout(); } })
+    ]);
+    toast.appendChild(el('div', { 'class': 'th', text: 'Class seems to have ended' })); toast.appendChild(msg); toast.appendChild(row);
+    root.appendChild(toast);
+    function tick() { msg.textContent = why + ' Logging you out in ' + left + ' s.'; if (left-- <= 0) { stopCountdown(); logout(); } }
+    tick(); sess.counting = setInterval(tick, 1000);
+  }
+  function stopCountdown() { clearInterval(sess.counting); sess.counting = null; if (toast && toast.parentNode) toast.parentNode.removeChild(toast); }
+  function findClick(re, hrefRe) {
+    var hit = null;
+    docs().forEach(function (d) {
+      if (hit) return;
+      [].some.call(d.querySelectorAll('a,button,[role=button],[role=menuitem],input[type=button],input[type=submit]'), function (e) {
+        var t = ((e.innerText || e.value || '') + '').trim().toLowerCase(), a = (e.getAttribute('aria-label') || e.getAttribute('title') || '').trim().toLowerCase();
+        if (re.test(t) || re.test(a) || (hrefRe && e.href && hrefRe.test(e.getAttribute('href') || ''))) { hit = e; return true; }
+        return false;
+      });
+    });
+    return hit;
+  }
+  function logout() {
+    sess.done = true; hidden = false;
+    // 1) camera off
+    procs.forEach(function (p) { try { p.raw.stop(); } catch (e) {} kill(p); });
+    // 2) leave the call if a Leave button is showing, then 3) log out
+    var leave = findClick(/^(leave|leave meeting|leave class|leave session|leave call|exit|exit class)$/);
+    if (leave) try { leave.click(); } catch (e) {}
+    setTimeout(function () {
+      var out = findClick(/^(log ?out|sign ?out|logout|signout|log off|sign off)$/, /log-?out|sign-?out|logoff/i);
+      if (out) {
+        if (out.tagName === 'A' && out.href && !/^javascript:/i.test(out.getAttribute('href') || '')) location.href = out.href; else out.click();
+        note2('Logged out. Your camera is off.');
+      } else note2(leave ? 'Left the class and turned your camera off. I couldn’t find a Log out button on this page — please log out yourself.'
+                         : 'Camera is off. I couldn’t find a Log out button on this page — please log out yourself.');
+    }, leave ? 2500 : 200);
+  }
+  function note2(text) {
+    if (!root) return;
+    var n = el('div', { 'class': 't' }, [el('div', { 'class': 'th', text: text }), el('div', { 'class': 'tr' }, [el('button', { 'class': 'tg', text: 'OK', onclick: function () { n.remove(); } })])]);
+    root.appendChild(n);
+  }
+
   /* ---------- floating control (Shadow DOM, no innerHTML so it survives strict pages) ---------- */
   var host, root, panel, btn, dot, statusEl, hideBtn, rows = {}, chips = {};
   function el(tag, attrs, kids) {
@@ -324,7 +409,9 @@
     '.k{width:100%;min-height:40px;border-radius:10px;border:1px dashed #555;background:#1d2025;color:#ddd}' +
     '.s{color:#9aa;font-size:12px;line-height:1.4}' +
     '.hm{width:100%;min-height:46px;border-radius:12px;border:0;background:#334155;color:#fff;font-size:15px;font-weight:600;margin-bottom:12px}.hm.on{background:#dc2626}' +
-    '.b.hid{background:#dc2626}';
+    '.b.hid{background:#dc2626}' +
+    '.ao{border-top:1px solid #2b3037;padding-top:10px;margin-bottom:10px}.ao label{display:flex;align-items:center;gap:8px;color:#ddd;font-size:14px;margin-bottom:8px}.ao input[type=checkbox]{width:20px;height:20px}.ao input[type=time]{background:#23272d;color:#eee;border:1px solid #333;border-radius:8px;padding:6px;font-size:14px}' +
+    '.t{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);width:min(380px,calc(100vw - 20px));background:#16191df2;color:#eee;border-radius:16px;padding:14px;box-shadow:0 8px 30px #000a;z-index:2147483647;font-size:14px}.th{font-weight:600;font-size:15px;margin-bottom:6px}.tm{color:#cbd;margin-bottom:10px}.tr{display:flex;gap:8px}.tr button{flex:1;min-height:44px;border-radius:10px;border:0;font-size:14px;font-weight:600}.tc{background:#334155;color:#fff}.tg{background:#dc2626;color:#fff}';
   function buildUI() {
     host = el('div', { id: 'bgfx-host' });
     root = host.attachShadow ? host.attachShadow({ mode: 'open' }) : host;
@@ -357,10 +444,16 @@
     rows.video = el('div', { 'class': 'r' }, [vfile, el('button', { 'class': 'k', text: 'Choose background video\u2026', onclick: function () { vfile.click(); } })]);
     rows.color = el('div', { 'class': 'r' }, [el('label', { text: 'Background colour' }), el('input', { type: 'color', value: S.color, oninput: function (e) { S.color = e.target.value; persist(); } })]);
     statusEl = el('div', { 'class': 's' });
+    var ao = el('input', { type: 'checkbox', onchange: function (e) { S.autoOut = e.target.checked; persist(); ui(); } }); ao.checked = !!S.autoOut;
+    var at = el('input', { type: 'time', onchange: function (e) { S.leaveAt = e.target.value || ''; persist(); ui(); } }); at.value = S.leaveAt || '';
+    var aoBox = el('div', { 'class': 'ao' }, [
+      el('label', {}, [ao, el('span', { text: 'Log me out when class ends' })]),
+      el('label', {}, [el('span', { text: 'Or leave at' }), at, el('button', { 'class': 'x', text: '×', 'aria-label': 'Clear time', onclick: function () { at.value = ''; S.leaveAt = ''; persist(); ui(); } })])
+    ]);
     hideBtn = el('button', { 'class': 'hm', onclick: function () { setHidden(!hidden); } });
     panel = el('div', { 'class': 'p' }, [
       el('div', { 'class': 'h' }, [el('span', { text: 'Background' }), el('button', { 'class': 'x', text: '×', 'aria-label': 'Close', onclick: toggle })]),
-      hideBtn, chipRow, rows.blur, rows.spot, rows.image, rows.video, rows.color, statusEl
+      hideBtn, chipRow, rows.blur, rows.spot, rows.image, rows.video, rows.color, aoBox, statusEl
     ]);
     root.appendChild(btn); root.appendChild(panel);
     (D.body || D.documentElement).appendChild(host);
@@ -403,6 +496,7 @@
     var ai = { idle: 'not loaded', loading: 'loading…', ready: 'ready', failed: 'blocked on this page → using Spot' }[segState];
     var lines = ['AI cut-out: ' + ai, cams ? 'Camera: processing · ' + fps + ' fps' : 'Camera: waiting — turn your camera on (or off and on again)'];
     if (S.mode === 'image' && !bgImg) lines.push('No photo chosen yet — showing colour.');
+    if (S.autoOut || S.leaveAt) lines.push('Auto log out: ' + (S.autoOut ? (sess.seen ? 'watching for the end of class' : 'arms once your class is under way') : 'off') + (S.leaveAt ? ' \u00b7 leave at ' + S.leaveAt : ''));
     if (S.mode === 'video' && !bgVid) lines.push(vidNote || 'No video chosen yet — showing colour.');
     statusEl.textContent = lines.join('\n'); statusEl.style.whiteSpace = 'pre-line';
     dot.style.background = S.mode === 'off' ? '#888' : !cams ? '#f59e0b' : (segState === 'ready' || S.mode === 'spot') ? '#22c55e' : segState === 'failed' ? '#ef4444' : '#f59e0b';
@@ -415,12 +509,14 @@
     if (S.mode !== 'off' && S.mode !== 'spot') loadSeg();
   }
   sweep();
-  setInterval(function () { sweep(); vidWatchdog(); ui(); }, 1500);
+  setInterval(function () { sweep(); vidWatchdog(); try { endWatch(); } catch (e) {} ui(); }, 1500);
   ui();
   W.__bgfx = {
     open: function () { if (panel) { panel.style.display = 'block'; ui(); } },
     setMode: setMode,
     hide: setHidden,
+    setAutoOut: function (b, t) { S.autoOut = !!b; if (t !== undefined) S.leaveAt = t; persist(); ui(); },
+    _sess: function () { return { seen: sess.seen, counting: !!sess.counting, done: sess.done, quiet: sess.quietSince }; },
     setBlur: function (b) { S.blur = b; persist(); },
     setColor: function (c) { S.color = c; persist(); },
     state: function () { var f = []; procs.forEach(function (p) { f.push(p.fps); }); return { mode: S.mode, hidden: hidden, ai: segState, cameras: procs.size, fps: f }; }
