@@ -13,6 +13,8 @@
 
   var S = { mode: 'blur', blur: 16, color: '#24384d' };
   try { var saved = JSON.parse(lsGet(KEY) || '{}'); for (var k in saved) S[k] = saved[k]; } catch (e) {}
+  var hidden = false;
+  function wantVid() { return S.mode === 'video' || hidden; }
   function persist() { lsSet(KEY, JSON.stringify(S)); }
   var bgImg = null;
   function setImg(src) { var i = new Image(); i.onload = function () { bgImg = i; ui(); }; i.src = src; }
@@ -35,7 +37,7 @@
       v.muted = true; v.loop = true; v.playsInline = true; v.setAttribute('playsinline', ''); v.__bgfxMine = 1;
       v.style.cssText = 'position:fixed;left:2px;top:0;width:2px;height:2px;opacity:.01;pointer-events:none;z-index:-1';
       v.addEventListener('ended', function () { v.currentTime = 0; v.play().catch(function () {}); });
-      v.addEventListener('pause', function () { if (S.mode === 'video' && !v.__hold) setTimeout(function () { v.play().catch(function () {}); }, 50); });
+      v.addEventListener('pause', function () { if (wantVid() && !v.__hold) setTimeout(function () { v.play().catch(function () {}); }, 50); });
       v.onerror = function () { vidNote = 'That video could not be played here \u2014 try an MP4.'; bgVid = null; ui(); };
       v.src = URL.createObjectURL(blob);
       (D.body || D.documentElement).appendChild(v);
@@ -44,12 +46,12 @@
   }
   function syncVid() {
     if (!bgVid) return;
-    bgVid.__hold = S.mode !== 'video';
+    bgVid.__hold = !wantVid();
     if (bgVid.__hold) bgVid.pause(); else bgVid.play().catch(function () {});
   }
   var lastT = -1, stuck = 0;
   function vidWatchdog() {
-    var v = bgVid; if (!v || S.mode !== 'video') return;
+    var v = bgVid; if (!v || !wantVid()) return;
     if (v.paused) { v.play().catch(function () {}); return; }
     stuck = v.currentTime === lastT ? stuck + 1 : 0; lastT = v.currentTime;
     if (stuck >= 2) { stuck = 0; try { v.currentTime = 0; } catch (e) {} v.play().catch(function () {}); }
@@ -162,7 +164,8 @@
       if (p.c.width !== w || p.c.height !== h) { p.c.width = w; p.c.height = h; }
       var m = S.mode;
       try {
-        if (!p.raw.enabled) { p.x.fillStyle = '#000'; p.x.fillRect(0, 0, w, h); }
+        if (hidden) drawHidden(p);
+        else if (!p.raw.enabled) { p.x.fillStyle = '#000'; p.x.fillRect(0, 0, w, h); }
         else if (m === 'off') drawRaw(p);
         else if (m !== 'spot' && segState === 'ready' && !segBusy) {
           segBusy = true;
@@ -185,6 +188,16 @@
     }
     next();
   }
+  function cover(x, src, w, h) {
+    var nw = src.naturalWidth || src.width, nh = src.naturalHeight || src.height;
+    var sc = Math.max(w / nw, h / nh), iw = nw * sc, ih = nh * sc;
+    x.drawImage(src, (w - iw) / 2, (h - ih) / 2, iw, ih);
+  }
+  // "Hide me": your video if you picked one, else your photo, else the colour.
+  function drawHidden(p) {
+    var x = p.x, w = p.c.width, h = p.c.height, src = vidFrame() || bgImg;
+    if (src) cover(x, src, w, h); else { x.fillStyle = S.color; x.fillRect(0, 0, w, h); }
+  }
   function drawRaw(p) { p.x.drawImage(p.v, 0, 0, p.c.width, p.c.height); }
   function cv(o, key, w, h) { var c = o[key] || (o[key] = D.createElement('canvas')); if (c.width !== w || c.height !== h) { c.width = w; c.height = h; } return c; }
 
@@ -192,11 +205,8 @@
     var x = p.x, w = p.c.width, h = p.c.height, m = S.mode;
     // 1) background
     var src = m === 'image' ? bgImg : m === 'video' ? vidFrame() : null;
-    if (src) {
-      var nw = src.naturalWidth || src.width, nh = src.naturalHeight || src.height;
-      var sc = Math.max(w / nw, h / nh), iw = nw * sc, ih = nh * sc;
-      x.drawImage(src, (w - iw) / 2, (h - ih) / 2, iw, ih);
-    } else if (m === 'color' || m === 'image' || m === 'video') {
+    if (src) cover(x, src, w, h);
+    else if (m === 'color' || m === 'image' || m === 'video') {
       x.fillStyle = S.color; x.fillRect(0, 0, w, h);
     } else { // blur (and Spot): blur a quarter-size copy, then scale up — cheap on phones
       var sw = Math.max(16, w >> 2), sh = Math.max(16, h >> 2), r = Math.max(1, S.blur / 4), b = cv(p, 'b', sw, sh), bx = b.getContext('2d');
@@ -286,7 +296,7 @@
   }
 
   /* ---------- floating control (Shadow DOM, no innerHTML so it survives strict pages) ---------- */
-  var host, root, panel, btn, dot, statusEl, rows = {}, chips = {};
+  var host, root, panel, btn, dot, statusEl, hideBtn, rows = {}, chips = {};
   function el(tag, attrs, kids) {
     var e = D.createElement(tag);
     for (var a in (attrs || {})) { if (a === 'text') e.textContent = attrs[a]; else if (a.slice(0, 2) === 'on') e.addEventListener(a.slice(2), attrs[a]); else e.setAttribute(a, attrs[a]); }
@@ -305,7 +315,9 @@
     '.r{margin-bottom:12px;display:none}.r label{display:block;color:#aaa;font-size:12px;margin-bottom:6px}' +
     'input[type=range]{width:100%;height:32px}input[type=color]{width:100%;height:40px;border:0;background:none}' +
     '.k{width:100%;min-height:40px;border-radius:10px;border:1px dashed #555;background:#1d2025;color:#ddd}' +
-    '.s{color:#9aa;font-size:12px;line-height:1.4}';
+    '.s{color:#9aa;font-size:12px;line-height:1.4}' +
+    '.hm{width:100%;min-height:46px;border-radius:12px;border:0;background:#334155;color:#fff;font-size:15px;font-weight:600;margin-bottom:12px}.hm.on{background:#dc2626}' +
+    '.b.hid{background:#dc2626}';
   function buildUI() {
     host = el('div', { id: 'bgfx-host' });
     root = host.attachShadow ? host.attachShadow({ mode: 'open' }) : host;
@@ -336,15 +348,17 @@
     rows.video = el('div', { 'class': 'r' }, [vfile, el('button', { 'class': 'k', text: 'Choose background video\u2026', onclick: function () { vfile.click(); } })]);
     rows.color = el('div', { 'class': 'r' }, [el('label', { text: 'Background colour' }), el('input', { type: 'color', value: S.color, oninput: function (e) { S.color = e.target.value; persist(); } })]);
     statusEl = el('div', { 'class': 's' });
+    hideBtn = el('button', { 'class': 'hm', onclick: function () { setHidden(!hidden); } });
     panel = el('div', { 'class': 'p' }, [
       el('div', { 'class': 'h' }, [el('span', { text: 'Background' }), el('button', { 'class': 'x', text: '×', 'aria-label': 'Close', onclick: toggle })]),
-      chipRow, rows.blur, rows.spot, rows.image, rows.video, rows.color, statusEl
+      hideBtn, chipRow, rows.blur, rows.spot, rows.image, rows.video, rows.color, statusEl
     ]);
     root.appendChild(btn); root.appendChild(panel);
     (D.body || D.documentElement).appendChild(host);
     place();
     W.addEventListener('resize', place);
   }
+  function setHidden(b) { hidden = !!b; syncVid(); ui(); }
   function toggle() { panel.style.display = panel.style.display === 'block' ? 'none' : 'block'; ui(); }
   function setMode(m) { S.mode = m; persist(); if (m !== 'off' && m !== 'spot') loadSeg(); syncVid(); ui(); }
   function pickVideo(f) {
@@ -371,6 +385,10 @@
   function ui() {
     if (!panel) return;
     for (var m in chips) chips[m].className = S.mode === m ? 'on' : '';
+    hideBtn.textContent = hidden ? 'You are hidden \u2014 tap to show yourself' : 'Hide me (show background only)';
+    hideBtn.className = hidden ? 'hm on' : 'hm';
+    btn.className = hidden ? 'b hid' : 'b';
+    btn.firstChild.nodeValue = hidden ? '\ud83d\ude48' : '\u2728';
     for (var r in rows) rows[r].style.display = S.mode === r ? 'block' : 'none';
     var cams = procs.size, fps = 0; procs.forEach(function (p) { fps = Math.max(fps, p.fps); });
     var ai = { idle: 'not loaded', loading: 'loading…', ready: 'ready', failed: 'blocked on this page → using Spot' }[segState];
@@ -391,9 +409,10 @@
   W.__bgfx = {
     open: function () { if (panel) { panel.style.display = 'block'; ui(); } },
     setMode: setMode,
+    hide: setHidden,
     setBlur: function (b) { S.blur = b; persist(); },
     setColor: function (c) { S.color = c; persist(); },
-    state: function () { var f = []; procs.forEach(function (p) { f.push(p.fps); }); return { mode: S.mode, ai: segState, cameras: procs.size, fps: f }; }
+    state: function () { var f = []; procs.forEach(function (p) { f.push(p.fps); }); return { mode: S.mode, hidden: hidden, ai: segState, cameras: procs.size, fps: f }; }
   };
   try { console.info('[bgfx] active. Mode:', S.mode); } catch (e) {}
 })();
