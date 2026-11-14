@@ -18,6 +18,30 @@
   function setImg(src) { var i = new Image(); i.onload = function () { bgImg = i; ui(); }; i.src = src; }
   var savedImg = lsGet(IKEY); if (savedImg) setImg(savedImg);
 
+  /* ---------- video background: kept in IndexedDB (too big for localStorage) ---------- */
+  var bgVid = null, vidNote = '';
+  function idb(fn) {
+    try {
+      var rq = indexedDB.open('bgfx', 1);
+      rq.onupgradeneeded = function () { rq.result.createObjectStore('files'); };
+      rq.onsuccess = function () { try { fn(rq.result.transaction('files', 'readwrite').objectStore('files')); } catch (e) {} };
+    } catch (e) {}
+  }
+  function setVid(blob) {
+    try {
+      if (bgVid) { URL.revokeObjectURL(bgVid.src); bgVid.remove(); }
+      var v = D.createElement('video');
+      v.muted = true; v.loop = true; v.playsInline = true; v.setAttribute('playsinline', ''); v.__bgfxMine = 1;
+      v.style.cssText = 'position:fixed;left:2px;top:0;width:2px;height:2px;opacity:.01;pointer-events:none;z-index:-1';
+      v.onerror = function () { vidNote = 'That video could not be played here \u2014 try an MP4.'; bgVid = null; ui(); };
+      v.src = URL.createObjectURL(blob);
+      (D.body || D.documentElement).appendChild(v);
+      bgVid = v; vidNote = ''; syncVid();
+    } catch (e) { vidNote = 'Video failed to load.'; }
+  }
+  function syncVid() { if (!bgVid) return; if (S.mode === 'video') bgVid.play().catch(function () {}); else bgVid.pause(); }
+  idb(function (st) { var g = st.get('video'); g.onsuccess = function () { if (g.result) { setVid(g.result); ui(); } }; });
+
   /* ---------- AI segmentation (MediaPipe Selfie Segmentation, landscape model) ---------- */
   var seg = null, segState = 'idle', segBusy = false, segFails = 0, pending = null;
   function loadSeg() {
@@ -142,10 +166,12 @@
   function compose(p, mask, img) {
     var x = p.x, w = p.c.width, h = p.c.height, m = S.mode;
     // 1) background
-    if (m === 'image' && bgImg) {
-      var sc = Math.max(w / bgImg.naturalWidth, h / bgImg.naturalHeight), iw = bgImg.naturalWidth * sc, ih = bgImg.naturalHeight * sc;
-      x.drawImage(bgImg, (w - iw) / 2, (h - ih) / 2, iw, ih);
-    } else if (m === 'color' || m === 'image') {
+    var src = m === 'image' ? bgImg : m === 'video' && bgVid && bgVid.readyState >= 2 ? bgVid : null;
+    if (src) {
+      var nw = src.naturalWidth || src.videoWidth, nh = src.naturalHeight || src.videoHeight;
+      var sc = Math.max(w / nw, h / nh), iw = nw * sc, ih = nh * sc;
+      x.drawImage(src, (w - iw) / 2, (h - ih) / 2, iw, ih);
+    } else if (m === 'color' || m === 'image' || m === 'video') {
       x.fillStyle = S.color; x.fillRect(0, 0, w, h);
     } else { // blur (and Spot): blur a quarter-size copy, then scale up — cheap on phones
       var sw = Math.max(16, w >> 2), sh = Math.max(16, h >> 2), r = Math.max(1, S.blur / 4), b = cv(p, 'b', sw, sh), bx = b.getContext('2d');
@@ -272,7 +298,7 @@
       if (drag.moved) { pos.r = Math.max(0, Math.min(innerWidth - 48, drag.r - dx)); pos.t = Math.max(0, Math.min(innerHeight - 48, drag.t + dy)); place(); }
     });
     btn.addEventListener('pointerup', function () { if (drag && !drag.moved) toggle(); else lsSet('bgfx-pos', JSON.stringify(pos)); drag = null; });
-    var modes = [['off', 'Off'], ['blur', 'Blur'], ['image', 'Image'], ['color', 'Colour'], ['spot', 'Spot']];
+    var modes = [['off', 'Off'], ['blur', 'Blur'], ['image', 'Image'], ['video', 'Video'], ['color', 'Colour'], ['spot', 'Spot']];
     var chipRow = el('div', { 'class': 'c' }, modes.map(function (m) {
       return (chips[m[0]] = el('button', { text: m[1], onclick: function () { setMode(m[0]); } }));
     }));
@@ -281,11 +307,13 @@
     rows.spot = el('div', { 'class': 'r' }, [el('label', { text: 'Blur strength' }), el('input', { type: 'range', min: '4', max: '40', value: String(S.blur), oninput: function (e) { S.blur = +e.target.value; range.value = e.target.value; persist(); } })]);
     var file = el('input', { type: 'file', accept: 'image/*', style: 'display:none', onchange: function (e) { var f = e.target.files && e.target.files[0]; if (f) pickImage(f); } });
     rows.image = el('div', { 'class': 'r' }, [file, el('button', { 'class': 'k', text: 'Choose background photo…', onclick: function () { file.click(); } })]);
+    var vfile = el('input', { type: 'file', accept: 'video/*', style: 'display:none', onchange: function (e) { var f = e.target.files && e.target.files[0]; if (f) pickVideo(f); } });
+    rows.video = el('div', { 'class': 'r' }, [vfile, el('button', { 'class': 'k', text: 'Choose background video\u2026', onclick: function () { vfile.click(); } })]);
     rows.color = el('div', { 'class': 'r' }, [el('label', { text: 'Background colour' }), el('input', { type: 'color', value: S.color, oninput: function (e) { S.color = e.target.value; persist(); } })]);
     statusEl = el('div', { 'class': 's' });
     panel = el('div', { 'class': 'p' }, [
       el('div', { 'class': 'h' }, [el('span', { text: 'Background' }), el('button', { 'class': 'x', text: '×', 'aria-label': 'Close', onclick: toggle })]),
-      chipRow, rows.blur, rows.spot, rows.image, rows.color, statusEl
+      chipRow, rows.blur, rows.spot, rows.image, rows.video, rows.color, statusEl
     ]);
     root.appendChild(btn); root.appendChild(panel);
     (D.body || D.documentElement).appendChild(host);
@@ -293,7 +321,13 @@
     W.addEventListener('resize', place);
   }
   function toggle() { panel.style.display = panel.style.display === 'block' ? 'none' : 'block'; ui(); }
-  function setMode(m) { S.mode = m; persist(); if (m !== 'off' && m !== 'spot') loadSeg(); ui(); }
+  function setMode(m) { S.mode = m; persist(); if (m !== 'off' && m !== 'spot') loadSeg(); syncVid(); ui(); }
+  function pickVideo(f) {
+    if (f.size > 300 * 1048576) { vidNote = 'That video is over 300 MB \u2014 pick a shorter clip.'; ui(); return; }
+    setVid(f);
+    idb(function (st) { st.put(f, 'video'); });
+    setMode('video');
+  }
   function pickImage(f) {
     var r = new FileReader();
     r.onload = function () {
@@ -317,6 +351,7 @@
     var ai = { idle: 'not loaded', loading: 'loading…', ready: 'ready', failed: 'blocked on this page → using Spot' }[segState];
     var lines = ['AI cut-out: ' + ai, cams ? 'Camera: processing · ' + fps + ' fps' : 'Camera: waiting — turn your camera on (or off and on again)'];
     if (S.mode === 'image' && !bgImg) lines.push('No photo chosen yet — showing colour.');
+    if (S.mode === 'video' && !bgVid) lines.push(vidNote || 'No video chosen yet — showing colour.');
     statusEl.textContent = lines.join('\n'); statusEl.style.whiteSpace = 'pre-line';
     dot.style.background = S.mode === 'off' ? '#888' : !cams ? '#f59e0b' : (segState === 'ready' || S.mode === 'spot') ? '#22c55e' : segState === 'failed' ? '#ef4444' : '#f59e0b';
   }
