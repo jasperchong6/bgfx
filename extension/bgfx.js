@@ -56,6 +56,7 @@
   }
   var lastT = -1, stuck = 0;
   function vidWatchdog() {
+    if (looping && loopVid && loopVid.paused) loopVid.play().catch(function () {});
     var v = bgVid; if (!v || !wantVid()) return;
     if (v.paused) { v.play().catch(function () {}); return; }
     stuck = v.currentTime === lastT ? stuck + 1 : 0; lastT = v.currentTime;
@@ -73,6 +74,68 @@
     return vcacheOk ? vcache : null;
   }
   idb(function (st) { var g = st.get('video'); g.onsuccess = function () { if (g.result) { setVid(g.result); ui(); } }; });
+
+  /* ---------- Record me + Loop me (party trick for calls with friends; off on SP Jain sites) ---------- */
+  var HOST = W.__BGFX_HOST || location.hostname;
+  var LOOP_OK = !/spjain/i.test(HOST);
+  var REC_MS = (W.__BGFX_T && W.__BGFX_T.rec) || 180000;
+  var looping = false, loopVid = null, lcache = null, lcacheOk = false, rec = null, recEnd = 0, recTimer = null, loopNote = '';
+  function setLoopVid(blob) {
+    try {
+      if (loopVid) { loopVid.__hold = true; URL.revokeObjectURL(loopVid.src); loopVid.remove(); }
+      lcacheOk = false;
+      var v = D.createElement('video');
+      v.muted = true; v.loop = true; v.playsInline = true; v.setAttribute('playsinline', ''); v.__bgfxMine = 1; v.__hold = true;
+      v.style.cssText = 'position:fixed;left:4px;top:0;width:2px;height:2px;opacity:.01;pointer-events:none;z-index:-1';
+      v.addEventListener('ended', function () { v.currentTime = 0; v.play().catch(function () {}); });
+      v.addEventListener('pause', function () { if (looping && !v.__hold) setTimeout(function () { v.play().catch(function () {}); }, 50); });
+      v.onerror = function () { loopNote = 'The recording could not be played.'; loopVid = null; looping = false; ui(); };
+      v.src = URL.createObjectURL(blob);
+      (D.body || D.documentElement).appendChild(v);
+      loopVid = v;
+    } catch (e) { loopNote = 'The recording could not be loaded.'; }
+  }
+  function loopFrame() {
+    var v = loopVid; if (!v) return null;
+    if (v.readyState >= 2 && v.videoWidth) {
+      if (!lcache) lcache = D.createElement('canvas');
+      if (lcache.width !== v.videoWidth || lcache.height !== v.videoHeight) { lcache.width = v.videoWidth; lcache.height = v.videoHeight; }
+      try { lcache.getContext('2d').drawImage(v, 0, 0); lcacheOk = true; } catch (e) {}
+    }
+    return lcacheOk ? lcache : null;
+  }
+  function setLoop(b) {
+    looping = !!b && !!loopVid && LOOP_OK;
+    if (loopVid) { loopVid.__hold = !looping; if (looping) { loopVid.currentTime = 0; loopVid.play().catch(function () {}); } else loopVid.pause(); }
+    ui();
+  }
+  function firstProc() { var f = null; procs.forEach(function (p) { if (!f && !p.dead) f = p; }); return f; }
+  function startRec() {
+    if (!LOOP_OK || rec) return;
+    var p = firstProc();
+    if (!p) { loopNote = 'Turn your camera on first.'; ui(); return; }
+    if (hidden || looping) { loopNote = 'Show yourself first — it records what your friends see live.'; ui(); return; }
+    var types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'], mt = '';
+    for (var i = 0; i < types.length; i++) if (W.MediaRecorder && MediaRecorder.isTypeSupported(types[i])) { mt = types[i]; break; }
+    try {
+      var tr = p.c.captureStream(30).getVideoTracks()[0], chunks = [];
+      rec = new MediaRecorder(new MediaStream([tr]), mt ? { mimeType: mt, videoBitsPerSecond: 2500000 } : {});
+      rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+      rec.onstop = function () {
+        try { tr.stop(); } catch (e) {}
+        clearInterval(recTimer); rec = null;
+        var blob = new Blob(chunks, { type: mt || 'video/webm' });
+        if (blob.size < 1000) { loopNote = 'Recording failed — try again.'; ui(); return; }
+        setLoopVid(blob); idb(function (st) { st.put(blob, 'loop'); });
+        loopNote = 'Recorded ' + Math.round((REC_MS - Math.max(0, recEnd - Date.now())) / 1000) + ' s. Tap Loop me to play it.'; ui();
+      };
+      rec.start(1000); recEnd = Date.now() + REC_MS; loopNote = '';
+      recTimer = setInterval(function () { if (Date.now() >= recEnd) stopRec(); ui(); }, 500);
+    } catch (e) { rec = null; loopNote = 'This browser can’t record here.'; }
+    ui();
+  }
+  function stopRec() { if (rec && rec.state !== 'inactive') { recEnd = Math.min(recEnd, Date.now()); rec.stop(); } }
+  if (LOOP_OK) idb(function (st) { var g = st.get('loop'); g.onsuccess = function () { if (g.result) { setLoopVid(g.result); ui(); } }; });
 
   /* ---------- AI segmentation (MediaPipe Selfie Segmentation, landscape model) ---------- */
   var seg = null, segState = 'idle', segBusy = false, segFails = 0, pending = null;
@@ -171,7 +234,8 @@
       if (p.c.width !== w || p.c.height !== h) { p.c.width = w; p.c.height = h; }
       var m = S.mode;
       try {
-        if (hidden) drawHidden(p);
+        if (looping && loopFrame()) cover(p.x, lcache, w, h);
+        else if (hidden) drawHidden(p);
         else if (!p.raw.enabled) { p.x.fillStyle = '#000'; p.x.fillRect(0, 0, w, h); }
         else if (m === 'off') drawRaw(p);
         else if (m !== 'spot' && segState === 'ready' && !segBusy) {
@@ -366,7 +430,7 @@
     return hit;
   }
   function logout() {
-    sess.done = true; hidden = false;
+    sess.done = true; hidden = false; looping = false;
     // 1) camera off
     procs.forEach(function (p) { try { p.raw.stop(); } catch (e) {} kill(p); });
     // 2) leave the call if a Leave button is showing, then 3) log out
@@ -388,7 +452,7 @@
   }
 
   /* ---------- floating control (Shadow DOM, no innerHTML so it survives strict pages) ---------- */
-  var host, root, panel, btn, dot, statusEl, hideBtn, rows = {}, chips = {};
+  var host, root, panel, btn, dot, statusEl, hideBtn, recBtn, loopBtn, rows = {}, chips = {};
   function el(tag, attrs, kids) {
     var e = D.createElement(tag);
     for (var a in (attrs || {})) { if (a === 'text') e.textContent = attrs[a]; else if (a === 'style') e.style.cssText = attrs[a]; else if (a.slice(0, 2) === 'on') e.addEventListener(a.slice(2), attrs[a]); else e.setAttribute(a, attrs[a]); }
@@ -410,6 +474,7 @@
     '.s{color:#9aa;font-size:12px;line-height:1.4}' +
     '.hm{width:100%;min-height:46px;border-radius:12px;border:0;background:#334155;color:#fff;font-size:15px;font-weight:600;margin-bottom:12px}.hm.on{background:#dc2626}' +
     '.b.hid{background:#dc2626}' +
+    '.lp{display:flex;gap:6px;margin-bottom:12px}.lp button{flex:1;min-height:42px;border-radius:10px;border:1px solid #333;background:#23272d;color:#ddd;font-size:14px}.lp button.on{background:#dc2626;border-color:#dc2626;color:#fff}.lp button:disabled{opacity:.45}' +
     '.ao{border-top:1px solid #2b3037;padding-top:10px;margin-bottom:10px}.ao label{display:flex;align-items:center;gap:8px;color:#ddd;font-size:14px;margin-bottom:8px}.ao input[type=checkbox]{width:20px;height:20px}.ao input[type=time]{background:#23272d;color:#eee;border:1px solid #333;border-radius:8px;padding:6px;font-size:14px}' +
     '.t{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);width:min(380px,calc(100vw - 20px));background:#16191df2;color:#eee;border-radius:16px;padding:14px;box-shadow:0 8px 30px #000a;z-index:2147483647;font-size:14px}.th{font-weight:600;font-size:15px;margin-bottom:6px}.tm{color:#cbd;margin-bottom:10px}.tr{display:flex;gap:8px}.tr button{flex:1;min-height:44px;border-radius:10px;border:0;font-size:14px;font-weight:600}.tc{background:#334155;color:#fff}.tg{background:#dc2626;color:#fff}';
   function buildUI() {
@@ -451,9 +516,12 @@
       el('label', {}, [el('span', { text: 'Or leave at' }), at, el('button', { 'class': 'x', text: '×', 'aria-label': 'Clear time', onclick: function () { at.value = ''; S.leaveAt = ''; persist(); ui(); } })])
     ]);
     hideBtn = el('button', { 'class': 'hm', onclick: function () { setHidden(!hidden); } });
+    recBtn = el('button', { onclick: function () { if (rec) stopRec(); else startRec(); } });
+    loopBtn = el('button', { onclick: function () { setLoop(!looping); } });
+    var lpRow = LOOP_OK ? el('div', { 'class': 'lp' }, [recBtn, loopBtn]) : null;
     panel = el('div', { 'class': 'p' }, [
       el('div', { 'class': 'h' }, [el('span', { text: 'Background' }), el('button', { 'class': 'x', text: '×', 'aria-label': 'Close', onclick: toggle })]),
-      hideBtn, chipRow, rows.blur, rows.spot, rows.image, rows.video, rows.color, aoBox, statusEl
+      hideBtn, lpRow, chipRow, rows.blur, rows.spot, rows.image, rows.video, rows.color, aoBox, statusEl
     ]);
     root.appendChild(btn); root.appendChild(panel);
     (D.body || D.documentElement).appendChild(host);
@@ -489,13 +557,22 @@
     for (var m in chips) chips[m].className = S.mode === m ? 'on' : '';
     hideBtn.textContent = hidden ? 'You are hidden \u2014 tap to show yourself' : 'Hide me (show background only)';
     hideBtn.className = hidden ? 'hm on' : 'hm';
-    btn.className = hidden ? 'b hid' : 'b';
+    if (LOOP_OK) {
+      if (rec) { var r = Math.max(0, Math.ceil((recEnd - Date.now()) / 1000)); recBtn.textContent = '\u25cf ' + Math.floor(r / 60) + ':' + ('0' + r % 60).slice(-2) + ' \u2014 tap to stop'; recBtn.className = 'on'; }
+      else { recBtn.textContent = loopVid ? '\u25cf Re-record (3 min)' : '\u25cf Record me (3 min)'; recBtn.className = ''; }
+      recBtn.disabled = looping;
+      loopBtn.textContent = looping ? '\u27f2 Looping \u2014 tap to go live' : '\u27f2 Loop me';
+      loopBtn.className = looping ? 'on' : ''; loopBtn.disabled = !loopVid || !!rec;
+    }
+    btn.className = (hidden || looping) ? 'b hid' : 'b';
     btn.firstChild.nodeValue = hidden ? '\ud83d\ude48' : '\u2728';
     for (var r in rows) rows[r].style.display = S.mode === r ? 'block' : 'none';
     var cams = procs.size, fps = 0; procs.forEach(function (p) { fps = Math.max(fps, p.fps); });
     var ai = { idle: 'not loaded', loading: 'loading…', ready: 'ready', failed: 'blocked on this page → using Spot' }[segState];
     var lines = ['AI cut-out: ' + ai, cams ? 'Camera: processing · ' + fps + ' fps' : 'Camera: waiting — turn your camera on (or off and on again)'];
     if (S.mode === 'image' && !bgImg) lines.push('No photo chosen yet — showing colour.');
+    if (loopNote) lines.push(loopNote);
+    if (!LOOP_OK) lines.push('Record/Loop me is off on SP Jain sites.');
     if (S.autoOut || S.leaveAt) lines.push('Auto log out: ' + (S.autoOut ? (sess.seen ? 'watching for the end of class' : 'arms once your class is under way') : 'off') + (S.leaveAt ? ' \u00b7 leave at ' + S.leaveAt : ''));
     if (S.mode === 'video' && !bgVid) lines.push(vidNote || 'No video chosen yet — showing colour.');
     statusEl.textContent = lines.join('\n'); statusEl.style.whiteSpace = 'pre-line';
@@ -515,11 +592,12 @@
     open: function () { if (panel) { panel.style.display = 'block'; ui(); } },
     setMode: setMode,
     hide: setHidden,
+    rec: startRec, loop: setLoop,
     setAutoOut: function (b, t) { S.autoOut = !!b; if (t !== undefined) S.leaveAt = t; persist(); ui(); },
     _sess: function () { return { seen: sess.seen, counting: !!sess.counting, done: sess.done, quiet: sess.quietSince }; },
     setBlur: function (b) { S.blur = b; persist(); },
     setColor: function (c) { S.color = c; persist(); },
-    state: function () { var f = []; procs.forEach(function (p) { f.push(p.fps); }); return { mode: S.mode, hidden: hidden, ai: segState, cameras: procs.size, fps: f }; }
+    state: function () { var f = []; procs.forEach(function (p) { f.push(p.fps); }); return { mode: S.mode, hidden: hidden, looping: looping, recording: !!rec, hasLoop: !!loopVid, ai: segState, cameras: procs.size, fps: f }; }
   };
   if (!EXT) try { console.info('[bgfx] active. Mode:', S.mode); } catch (e) {}
 })();
