@@ -75,7 +75,7 @@
   }
   idb(function (st) { var g = st.get('video'); g.onsuccess = function () { if (g.result) { setVid(g.result); ui(); } }; });
 
-  /* ---------- Record me + Loop me (party trick for calls with friends; off on SP Jain sites) ---------- */
+  /* ---------- Record me + Loop me ---------- */
   var HOST = W.__BGFX_HOST || location.hostname;
   var REC_MS = (W.__BGFX_T && W.__BGFX_T.rec) || 180000;
   var looping = false, loopVid = null, lcache = null, lcacheOk = false, rec = null, recEnd = 0, recTimer = null, loopNote = '';
