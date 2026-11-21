@@ -77,7 +77,6 @@
 
   /* ---------- Record me + Loop me (party trick for calls with friends; off on SP Jain sites) ---------- */
   var HOST = W.__BGFX_HOST || location.hostname;
-  var LOOP_OK = !/spjain/i.test(HOST);
   var REC_MS = (W.__BGFX_T && W.__BGFX_T.rec) || 180000;
   var looping = false, loopVid = null, lcache = null, lcacheOk = false, rec = null, recEnd = 0, recTimer = null, loopNote = '';
   function setLoopVid(blob) {
