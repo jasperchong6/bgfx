@@ -75,9 +75,9 @@
   }
   idb(function (st) { var g = st.get('video'); g.onsuccess = function () { if (g.result) { setVid(g.result); ui(); } }; });
 
-  /* ---------- Record me + Loop me. On SP Jain sites a looped recording is labelled "REPLAY - not live". ---------- */
+  /* ---------- Record me + Loop me (party trick for calls with friends; off on SP Jain sites) ---------- */
   var HOST = W.__BGFX_HOST || location.hostname;
-  var LOOP_OK = true, MARK = /spjain/i.test(HOST);
+  var LOOP_OK = !/spjain/i.test(HOST);
   var REC_MS = (W.__BGFX_T && W.__BGFX_T.rec) || 180000;
   var looping = false, loopVid = null, lcache = null, lcacheOk = false, rec = null, recEnd = 0, recTimer = null, loopNote = '';
   function setLoopVid(blob) {
@@ -108,15 +108,6 @@
     looping = !!b && !!loopVid && LOOP_OK;
     if (loopVid) { loopVid.__hold = !looping; if (looping) { loopVid.currentTime = 0; loopVid.play().catch(function () {}); } else loopVid.pause(); }
     ui();
-  }
-  // Burned into the outgoing video, so everyone watching can tell a recording from the live camera.
-  function replayBadge(x, w, h) {
-    var fs = Math.max(14, Math.round(Math.min(w, h) * 0.055)), pad = Math.round(fs * 0.6), txt = '⟲ REPLAY · not live';
-    x.save(); x.font = '600 ' + fs + 'px system-ui, Roboto, sans-serif'; x.textBaseline = 'middle';
-    var tw = x.measureText(txt).width, bw = tw + pad * 2, bh = fs + pad * 1.4, bx = pad, by = pad;
-    x.fillStyle = 'rgba(220,38,38,0.88)'; x.beginPath();
-    if (x.roundRect) x.roundRect(bx, by, bw, bh, bh / 2); else x.rect(bx, by, bw, bh);
-    x.fill(); x.fillStyle = '#fff'; x.fillText(txt, bx + pad, by + bh / 2 + 1); x.restore();
   }
   function firstProc() { var f = null; procs.forEach(function (p) { if (!f && !p.dead) f = p; }); return f; }
   function startRec() {
@@ -243,7 +234,7 @@
       if (p.c.width !== w || p.c.height !== h) { p.c.width = w; p.c.height = h; }
       var m = S.mode;
       try {
-        if (looping && loopFrame()) { cover(p.x, lcache, w, h); if (MARK) replayBadge(p.x, w, h); }
+        if (looping && loopFrame()) cover(p.x, lcache, w, h);
         else if (hidden) drawHidden(p);
         else if (!p.raw.enabled) { p.x.fillStyle = '#000'; p.x.fillRect(0, 0, w, h); }
         else if (m === 'off') drawRaw(p);
@@ -581,7 +572,7 @@
     var lines = ['AI cut-out: ' + ai, cams ? 'Camera: processing · ' + fps + ' fps' : 'Camera: waiting — turn your camera on (or off and on again)'];
     if (S.mode === 'image' && !bgImg) lines.push('No photo chosen yet — showing colour.');
     if (loopNote) lines.push(loopNote);
-    if (MARK) lines.push('On this site, Loop me shows a "REPLAY \u00b7 not live" label on your video.');
+    if (!LOOP_OK) lines.push('Record/Loop me is off on SP Jain sites.');
     if (S.autoOut || S.leaveAt) lines.push('Auto log out: ' + (S.autoOut ? (sess.seen ? 'watching for the end of class' : 'arms once your class is under way') : 'off') + (S.leaveAt ? ' \u00b7 leave at ' + S.leaveAt : ''));
     if (S.mode === 'video' && !bgVid) lines.push(vidNote || 'No video chosen yet — showing colour.');
     statusEl.textContent = lines.join('\n'); statusEl.style.whiteSpace = 'pre-line';

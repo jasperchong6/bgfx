@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "bgfx – background blur & video backgrounds",
-  "version": "1.6.0",
+  "version": "1.5.0",
   "description": "Blur or replace your camera background in browser video calls (Zoom web, ELO, Meet, Teams). Runs on your device; nothing is uploaded.",
   "content_scripts": [
     {
